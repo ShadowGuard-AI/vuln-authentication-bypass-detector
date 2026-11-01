@@ -29,6 +29,9 @@ def setup_argparse():
     return parser.parse_args()
 
 
+# urljoin drops the last path segment of the base unless the base ends in a
+# slash, so I force the slash first. A target like http://host/app has to keep
+# its /app prefix on every probe, not lose it to the login path.
 def _join_under_base(url, relative_path):
     """Join a relative path under the target URL path, preserving any prefix."""
     base = url if url.endswith('/') else url + '/'
@@ -67,10 +70,17 @@ def test_default_credentials(url, username_list, password_list, timeout, user_ag
                 # Do not follow redirects: a 302 is itself a success signal, and
                 # error status bodies are judged as returned.
                 response = requests.post(login_url, data=data, timeout=timeout, headers=headers, allow_redirects=False)
+                # reached only counts attempts that got an answer back. A run
+                # where every post raised counts as zero, and main treats that
+                # as no scan at all instead of printing a clean result.
                 reached += 1
 
                 if "login_successful" in response.text or response.status_code == 302:
                     logging.info(f"Default credentials found: username={username}, password=*** (password list entry {password_index})")
+                    # I store the position in the password list, never the
+                    # password itself. The report can point the operator at
+                    # the entry that worked without printing a working
+                    # credential into a log or a saved file.
                     vulnerable_credentials.append((username, password_index))
 
             except requests.exceptions.RequestException as e:
@@ -103,6 +113,9 @@ def test_path_traversal(url, path_traversal_payloads, timeout, user_agent, file_
         return vulnerable_urls, reached
 
     for payload in path_traversal_payloads:
+        # The payload goes in exactly as listed, with no encoding from me.
+        # Encoding the dots and slashes here would change the bytes the
+        # server decodes, and that decoding is the thing being tested.
         test_url = _join_under_base(url, file_path) + f"?{file_param}={payload}"
 
         try:
@@ -169,6 +182,10 @@ def main():
     password_list = load_list_from_file(args.password_list) if args.password_list else default_passwords
     path_traversal_payloads = load_list_from_file(args.path_traversal_payloads) if args.path_traversal_payloads else default_path_traversal_payloads
 
+    # load_list_from_file returns None for a file it could not read and a list
+    # for one it could, so None and empty are different failures here. None
+    # means the operator pointed me at something unreadable; empty means the
+    # file read fine and had nothing usable in it. Both stop the run.
     if username_list is None or password_list is None or path_traversal_payloads is None:
         logging.error("A supplied list file could not be read. Scan not performed.")
         sys.exit(1)
